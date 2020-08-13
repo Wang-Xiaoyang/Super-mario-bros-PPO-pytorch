@@ -16,12 +16,15 @@ import torch.nn.functional as F
 import numpy as np
 import shutil
 
+import wandb
+wandb.init(project="procgen-super-mario-ppo", reinit=True)
+
 
 def get_args():
     parser = argparse.ArgumentParser(
         """Implementation of model described in the paper: Proximal Policy Optimization Algorithms for Super Mario Bros""")
-    parser.add_argument("--world", type=int, default=1)
-    parser.add_argument("--stage", type=int, default=1)
+    parser.add_argument("--start_level", type=int, default=0)
+    parser.add_argument("--num_levels", type=int, default=0)
     parser.add_argument("--action_type", type=str, default="simple")
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--gamma', type=float, default=0.9, help='discount factor for rewards')
@@ -52,7 +55,7 @@ def train(opt):
     if not os.path.isdir(opt.saved_path):
         os.makedirs(opt.saved_path)
     mp = _mp.get_context("spawn")
-    envs = MultipleEnvironments(opt.world, opt.stage, opt.action_type, opt.num_processes)
+    envs = MultipleEnvironments(opt.start_level, opt.num_levels, opt.action_type, opt.num_processes)
     model = PPO(envs.num_states, envs.num_actions)
     if torch.cuda.is_available():
         model.cuda()
@@ -66,6 +69,7 @@ def train(opt):
     if torch.cuda.is_available():
         curr_states = curr_states.cuda()
     curr_episode = 0
+    total_steps = 0
     while True:
         # if curr_episode % opt.save_interval == 0 and curr_episode > 0:
         #     torch.save(model.state_dict(),
@@ -79,6 +83,8 @@ def train(opt):
         states = []
         rewards = []
         dones = []
+        rewards_log = []
+        reward_ep = np.zeros(opt.num_processes)
         for _ in range(opt.num_local_steps):
             states.append(curr_states)
             logits, value = model(curr_states)
@@ -95,6 +101,15 @@ def train(opt):
                 [agent_conn.send(("step", act)) for agent_conn, act in zip(envs.agent_conns, action)]
 
             state, reward, done, info = zip(*[agent_conn.recv() for agent_conn in envs.agent_conns])
+            
+            for i in range(opt.num_processes):
+                reward_ep[i] += reward_ep[i] + reward[i]
+
+            for j in range(len(done)):
+                if done[j]:
+                    rewards_log.append(reward_ep[j])
+                    reward_ep[j] = 0
+
             state = torch.from_numpy(np.concatenate(state, 0))
             if torch.cuda.is_available():
                 state = state.cuda()
@@ -106,6 +121,10 @@ def train(opt):
             rewards.append(reward)
             dones.append(done)
             curr_states = state
+
+            total_steps += len(rewards)*opt.num_processes
+        # wandb logging
+        # wandb.log({"ep reward": np.mean(rewards_log)}, step=curr_episode)
 
         _, next_value, = model(curr_states)
         next_value = next_value.squeeze()
@@ -147,7 +166,9 @@ def train(opt):
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
                 optimizer.step()
         print("Episode: {}. Total loss: {}".format(curr_episode, total_loss))
-
+        wandb.log({"total loss": total_loss,
+                    "ep reward": np.mean(rewards_log),
+                    "global steps": total_steps,})
 
 if __name__ == "__main__":
     opt = get_args()

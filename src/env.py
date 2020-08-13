@@ -3,6 +3,7 @@
 """
 
 import gym_super_mario_bros
+import gym
 from gym.spaces import Box
 from gym import Wrapper
 from nes_py.wrappers import JoypadSpace
@@ -30,16 +31,16 @@ class Monitor:
 def process_frame(frame):
     if frame is not None:
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-        frame = cv2.resize(frame, (84, 84))[None, :, :] / 255.
+        frame = cv2.resize(frame, (64, 64))[None, :, :] / 255.
         return frame
     else:
-        return np.zeros((1, 84, 84))
+        return np.zeros((1, 64, 64))
 
 
 class CustomReward(Wrapper):
     def __init__(self, env=None, monitor=None):
         super(CustomReward, self).__init__(env)
-        self.observation_space = Box(low=0, high=255, shape=(1, 84, 84))
+        self.observation_space = Box(low=0, high=255, shape=(1, 64, 64))
         self.curr_score = 0
         if monitor:
             self.monitor = monitor
@@ -51,14 +52,15 @@ class CustomReward(Wrapper):
         if self.monitor:
             self.monitor.record(state)
         state = process_frame(state)
-        reward += (info["score"] - self.curr_score) / 40.
-        self.curr_score = info["score"]
-        if done:
-            if info["flag_get"]:
-                reward += 50
-            else:
-                reward -= 50
-        return state, reward / 10., done, info
+        # reward += (info["score"] - self.curr_score) / 40.
+        # self.curr_score = info["score"]
+        # if done:
+        #     if info["flag_get"]:
+        #         reward += 50
+        #     else:
+        #         reward -= 50
+        # return state, reward / 10., done, info
+        return state, reward, done, info
 
     def reset(self):
         self.curr_score = 0
@@ -68,9 +70,9 @@ class CustomReward(Wrapper):
 class CustomSkipFrame(Wrapper):
     def __init__(self, env, skip=4):
         super(CustomSkipFrame, self).__init__(env)
-        self.observation_space = Box(low=0, high=255, shape=(skip, 84, 84))
+        self.observation_space = Box(low=0, high=255, shape=(skip, 64, 64))
         self.skip = skip
-        self.states = np.zeros((skip, 84, 84), dtype=np.float32)
+        self.states = np.zeros((skip, 64, 64), dtype=np.float32)
 
     def step(self, action):
         total_reward = 0
@@ -94,31 +96,34 @@ class CustomSkipFrame(Wrapper):
         return self.states[None, :, :, :].astype(np.float32)
 
 
-def create_train_env(world, stage, actions, output_path=None):
-    env = gym_super_mario_bros.make("SuperMarioBros-{}-{}-v0".format(world, stage))
+def create_train_env(start_level, num_levels, actions, output_path=None):
+    # env = gym_super_mario_bros.make("SuperMarioBros-{}-{}-v0".format(world, stage))
+    env = gym.make("procgen:procgen-coinrun-v0", start_level=start_level, num_levels=num_levels)
     if output_path:
         monitor = Monitor(256, 240, output_path)
     else:
         monitor = None
 
-    env = JoypadSpace(env, actions)
+    # env = JoypadSpace(env, actions)
     env = CustomReward(env, monitor)
     env = CustomSkipFrame(env)
     return env
 
 
 class MultipleEnvironments:
-    def __init__(self, world, stage, action_type, num_envs, output_path=None):
+    def __init__(self, start_level, num_levels, action_type, num_envs, output_path=None):
         self.agent_conns, self.env_conns = zip(*[mp.Pipe() for _ in range(num_envs)])
-        if action_type == "right":
-            actions = RIGHT_ONLY
-        elif action_type == "simple":
-            actions = SIMPLE_MOVEMENT
-        else:
-            actions = COMPLEX_MOVEMENT
-        self.envs = [create_train_env(world, stage, actions, output_path=output_path) for _ in range(num_envs)]
+        # if action_type == "right":
+        #     actions = RIGHT_ONLY
+        # elif action_type == "simple":
+        #     actions = SIMPLE_MOVEMENT
+        # else:
+        #     actions = COMPLEX_MOVEMENT
+
+        # actions = 0, no meaning
+        self.envs = [create_train_env(start_level, num_levels, 0, output_path=output_path) for _ in range(num_envs)]
         self.num_states = self.envs[0].observation_space.shape[0]
-        self.num_actions = len(actions)
+        self.num_actions = self.envs[0].action_space.n
         for index in range(num_envs):
             process = mp.Process(target=self.run, args=(index,))
             process.start()
