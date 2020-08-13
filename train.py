@@ -40,6 +40,7 @@ def get_args():
     parser.add_argument("--max_actions", type=int, default=200, help="Maximum repetition steps in test phase")
     parser.add_argument("--log_path", type=str, default="tensorboard/ppo_super_mario_bros")
     parser.add_argument("--saved_path", type=str, default="trained_models")
+    parser.add_argument("--channels", type=int, default=3, help="image channels, rgb or grey")
     args = parser.parse_args()
     return args
 
@@ -56,7 +57,7 @@ def train(opt):
         os.makedirs(opt.saved_path)
     mp = _mp.get_context("spawn")
     envs = MultipleEnvironments(opt.start_level, opt.num_levels, opt.action_type, opt.num_processes)
-    model = PPO(envs.num_states, envs.num_actions)
+    model = PPO(envs.num_states*opt.channels, envs.num_actions)
     if torch.cuda.is_available():
         model.cuda()
     model.share_memory()

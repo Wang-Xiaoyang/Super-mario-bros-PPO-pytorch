@@ -30,17 +30,19 @@ class Monitor:
 
 def process_frame(frame):
     if frame is not None:
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-        frame = cv2.resize(frame, (64, 64))[None, :, :] / 255.
+        # frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        # frame = cv2.resize(frame, (64, 64))[None, :, :] / 255.
+        frame = frame / 255.
+        frame = np.resize(frame, (3, 64, 64))
         return frame
     else:
-        return np.zeros((1, 64, 64))
+        return np.zeros((3, 64, 64))
 
 
 class CustomReward(Wrapper):
     def __init__(self, env=None, monitor=None):
         super(CustomReward, self).__init__(env)
-        self.observation_space = Box(low=0, high=255, shape=(1, 64, 64))
+        self.observation_space = Box(low=0, high=255, shape=(3, 64, 64))
         self.curr_score = 0
         if monitor:
             self.monitor = monitor
@@ -70,9 +72,9 @@ class CustomReward(Wrapper):
 class CustomSkipFrame(Wrapper):
     def __init__(self, env, skip=4):
         super(CustomSkipFrame, self).__init__(env)
-        self.observation_space = Box(low=0, high=255, shape=(skip, 64, 64))
+        self.observation_space = Box(low=0, high=255, shape=(skip, 3, 64, 64))
         self.skip = skip
-        self.states = np.zeros((skip, 64, 64), dtype=np.float32)
+        self.states = np.zeros((skip, 3, 64, 64), dtype=np.float32)
 
     def step(self, action):
         total_reward = 0
