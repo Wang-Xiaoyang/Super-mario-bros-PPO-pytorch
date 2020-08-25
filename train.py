@@ -7,8 +7,10 @@ import os
 os.environ['OMP_NUM_THREADS'] = '1'
 import argparse
 import torch
+import torch.nn as nn
 from src.env import MultipleEnvironments
 from src.model import PPO
+from src.model import RandomNetwork
 from src.process import eval
 import torch.multiprocessing as _mp
 from torch.distributions import Categorical
@@ -35,7 +37,7 @@ def get_args():
     parser.add_argument('--num_epochs', type=int, default=10)
     parser.add_argument("--num_local_steps", type=int, default=512)
     parser.add_argument("--num_global_steps", type=int, default=5e6)
-    parser.add_argument("--num_processes", type=int, default=8)
+    parser.add_argument("--num_processes", type=int, default=4)
     parser.add_argument("--save_interval", type=int, default=50, help="Number of steps between savings")
     parser.add_argument("--max_actions", type=int, default=200, help="Maximum repetition steps in test phase")
     parser.add_argument("--log_path", type=str, default="tensorboard/ppo_super_mario_bros")
@@ -69,6 +71,13 @@ def train(opt):
     curr_states = torch.from_numpy(np.concatenate(curr_states, 0))
     if torch.cuda.is_available():
         curr_states = curr_states.cuda()
+
+    # randon network init
+    random_model = RandomNetwork(envs.num_states*opt.channels)
+    if torch.cuda.is_available():
+        random_model.cuda()
+    mse_loss = nn.MSELoss()
+
     curr_episode = 0
     total_steps = 0
     while True:
@@ -82,13 +91,29 @@ def train(opt):
         actions = []
         values = []
         states = []
+        states_raw = []
         rewards = []
         dones = []
         rewards_log = []
         reward_ep = np.zeros(opt.num_processes)
+        
+        # randon network re-init
+        random_model.re_init()
+        if torch.cuda.is_available():
+            random_model.cuda()
+
         for _ in range(opt.num_local_steps):
-            states.append(curr_states)
-            logits, value = model(curr_states)
+            states_raw.append(curr_states)
+            # random net
+            with torch.no_grad():
+                curr_states_random = random_model(curr_states)
+            # curr_states_random = curr_states_random.cuda()
+            states.append(curr_states_random)
+            #
+            # curr_states_random.to('cpu')
+            # del curr_states_random
+            # torch.cuda.empty_cache()
+            logits, value, penultimate_random = model(curr_states_random)
             values.append(value.squeeze())
             policy = F.softmax(logits, dim=1)
             old_m = Categorical(policy)
@@ -124,15 +149,22 @@ def train(opt):
             curr_states = state
 
             total_steps += len(rewards)*opt.num_processes
-        # wandb logging
-        # wandb.log({"ep reward": np.mean(rewards_log)}, step=curr_episode)
 
-        _, next_value, = model(curr_states)
+        with torch.no_grad():
+            curr_states_random = random_model(curr_states)
+        # curr_states_random = curr_states_random.cuda()
+        _, next_value, _ = model(curr_states_random)
+        #
+        # curr_states_random.to('cpu')
+        # del curr_states_random
+        # torch.cuda.empty_cache()
+        #
         next_value = next_value.squeeze()
         old_log_policies = torch.cat(old_log_policies).detach()
         actions = torch.cat(actions)
         values = torch.cat(values).detach()
         states = torch.cat(states)
+        states_raw = torch.cat(states_raw)
         gae = 0
         R = []
         for value, reward, done in list(zip(values, rewards, dones))[::-1]:
@@ -149,7 +181,7 @@ def train(opt):
                 batch_indices = indice[
                                 int(j * (opt.num_local_steps * opt.num_processes / opt.batch_size)): int((j + 1) * (
                                         opt.num_local_steps * opt.num_processes / opt.batch_size))]
-                logits, value = model(states[batch_indices])
+                logits, value, penultimate_random = model(states[batch_indices])
                 new_policy = F.softmax(logits, dim=1)
                 new_m = Categorical(new_policy)
                 new_log_policy = new_m.log_prob(actions[batch_indices])
@@ -161,7 +193,11 @@ def train(opt):
                 # critic_loss = torch.mean((R[batch_indices] - value) ** 2) / 2
                 critic_loss = F.smooth_l1_loss(R[batch_indices], value.squeeze())
                 entropy_loss = torch.mean(new_m.entropy())
-                total_loss = actor_loss + critic_loss - opt.beta * entropy_loss
+                # random net loss
+                _, _, penultimate_raw = model(states_raw[batch_indices])
+                random_net_loss = mse_loss(penultimate_random, penultimate_raw)
+
+                total_loss = actor_loss + critic_loss - opt.beta * entropy_loss + random_net_loss
                 optimizer.zero_grad()
                 total_loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
